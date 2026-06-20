@@ -17,9 +17,7 @@ from dataclasses import dataclass
 
 import tweepy
 
-# X profile field limits.
-MAX_NAME_LEN = 50
-MAX_BIO_LEN = 160
+from .x_text import MAX_BIO_LEN, MAX_NAME_LEN
 
 
 @dataclass(frozen=True)

@@ -11,7 +11,8 @@ read the code that the winner must DM to the main account.
 
 from __future__ import annotations
 
-from ..social.x_client import MAX_BIO_LEN, Profile, XClient
+from ..social.x_client import Profile, XClient
+from ..social.x_text import MAX_BIO_LEN, sanitize_bio, sanitize_name
 from .generator import GeneratedPersona
 
 # Neutral state a retired account is reset to (no game identity).
@@ -20,12 +21,15 @@ DORMANT_BIO = "just here for the vibes"
 
 
 def compose_bio(base_bio: str, claim_code: str) -> str:
-    """Put the claim code at the end of the bio, trimming to fit the 160 limit."""
+    """Sanitize the base bio (X-safe chars) and append the claim code, fitting
+    the 160-char limit. Finding this code is how a player proves they found the
+    persona."""
     suffix = f"\ncode: {claim_code}"
     room = MAX_BIO_LEN - len(suffix)
     if room < 0:
         raise ValueError("claim code too long for a bio")
-    return f"{base_bio[:room].rstrip()}{suffix}"
+    safe_base = sanitize_bio(base_bio, reserve_for_claim_code=False)[:room].rstrip()
+    return f"{safe_base}{suffix}"
 
 
 class PersonaDresser:
@@ -44,10 +48,11 @@ class PersonaDresser:
         """Apply identity + embed the claim code in the bio. Returns the profile
         X reports back, so the orchestrator can verify the write took."""
         bio = compose_bio(identity.bio, claim_code)
+        name = sanitize_name(identity.display_name)
         if avatar_path:
             self._x.set_avatar(access_token, access_secret, avatar_path)
         return self._x.update_profile(
-            access_token, access_secret, name=identity.display_name, description=bio
+            access_token, access_secret, name=name, description=bio
         )
 
     def retire(self, *, access_token: str, access_secret: str) -> Profile:
