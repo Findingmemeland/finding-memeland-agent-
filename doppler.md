@@ -17,6 +17,9 @@ Prod: Doppler ↔ Railway integration injects these automatically (checklist ste
 | `LOG_LEVEL` | config | default `INFO` |
 | `ANTHROPIC_API_KEY` | secret | clue + persona generation |
 | `ANTHROPIC_MODEL` | config | e.g. `claude-sonnet-4-6` |
+| `OPENAI_API_KEY` | secret | avatar image generation (gpt-image) |
+| `OPENAI_IMAGE_MODEL` | config | `gpt-image-1` / `gpt-image-1.5` |
+| `OPENAI_IMAGE_SIZE` | config | e.g. `1024x1024` |
 | `SUPABASE_URL` | secret | project URL |
 | `SUPABASE_SERVICE_ROLE_KEY` | secret | server-side key — never client |
 | `X_API_KEY` | secret | single dev app |

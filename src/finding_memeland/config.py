@@ -23,6 +23,11 @@ class Settings(BaseSettings):
     anthropic_api_key: str = Field(default="")
     anthropic_model: str = Field(default="claude-sonnet-4-6")
 
+    # OpenAI (avatar image generation)
+    openai_api_key: str = Field(default="")
+    openai_image_model: str = Field(default="gpt-image-1")
+    openai_image_size: str = Field(default="1024x1024")
+
     # Supabase
     supabase_url: str = Field(default="")
     supabase_service_role_key: str = Field(default="")

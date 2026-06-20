@@ -42,8 +42,9 @@ ARCHETYPES = (
     "old fictional character with no active IP holder",
     "mythological or folklore figure",
     "invented crypto-native archetype (anon degen, rugged dev, diamond-hands "
-    "grandma, perma-bull oracle, etc.)",
-    "public-domain / internet-folklore figure or classic meme lineage",
+    "grandma, perma-bull oracle, etc.) — the SAFEST meme-native route",
+    "genuinely ownerless folklore or pre-internet phenomenon (NOT character "
+    "memes with an identifiable creator — see forbidden list)",
 )
 
 # Difficulty registers the pipeline cycles through to keep the pool varied
@@ -78,7 +79,13 @@ characters; abstract concepts/animals/objects; old fictional characters with no 
 active IP holder; mythological/folklore figures; invented crypto-native \
 archetypes; public-domain or internet-folklore figures.
 - FORBIDDEN: real living people; trademarks/brands; modern IP-held characters \
-(Disney, contemporary anime, recent memes with a known living creator/owner).
+(Disney, contemporary anime); and faithful reproductions of a SPECIFIC owned \
+meme character or its trade dress — e.g. the specific Pepe the Frog character / \
+"feels good man" face / "rare Pepe" branding, the specific Wojak characters, the \
+specific Doge dog photo. The line is COPYING a specific owned character, not the \
+subject matter: generic ORIGINAL subjects are fine, including original frogs in \
+your own distinct art style (frogs are on-brand for this project). When you use a \
+common animal/subject, make it your own, not a clone of a known meme character.
 
 Coherence rule: the declared `archetype` MUST be the TRUE category of the hidden \
 identity. Do NOT label something "invented" if it secretly points to a real \
@@ -180,11 +187,5 @@ class PersonaGenerator:
         text = "".join(block.text for block in resp.content if getattr(block, "type", "") == "text")
         return _to_persona(_extract_json(text))
 
-    def generate_avatar(self, avatar_prompt: str) -> bytes:
-        """Return PNG bytes for the persona avatar.
-
-        TODO(decision pending): pick an image-generation backend/service and wire
-        it here. The Anthropic API does not generate images. Output feeds
-        PersonaDresser.set_avatar via a temp file. Track cost per avatar.
-        """
-        raise NotImplementedError("avatar image backend not chosen yet")
+    # Avatar generation lives in persona/avatar.py (AvatarGenerator, OpenAI
+    # gpt-image). It consumes GeneratedPersona.avatar_prompt.
