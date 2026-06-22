@@ -90,3 +90,21 @@ class Repo:
         self._db.table("personas").update(_clean({"state": state, **fields})).eq(
             "id", persona_id
         ).execute()
+
+    # --- approval queue (non-game posts) ---
+    def create_approval(self, *, kind: str, draft_text: str, telegram_msg_id: str | None = None) -> int:
+        resp = self._db.table("approval_queue").insert(
+            {"kind": kind, "draft_text": draft_text, "telegram_msg_id": telegram_msg_id}
+        ).execute()
+        return resp.data[0]["id"]
+
+    def get_approval(self, approval_id: int) -> dict[str, Any] | None:
+        resp = self._db.table("approval_queue").select("*").eq("id", approval_id).execute()
+        rows = resp.data or []
+        return rows[0] if rows else None
+
+    def set_approval_status(self, approval_id: int, status: str) -> None:
+        from datetime import datetime, timezone
+        self._db.table("approval_queue").update(
+            {"status": status, "decided_at": datetime.now(timezone.utc).isoformat()}
+        ).eq("id", approval_id).execute()

@@ -1,7 +1,7 @@
-"""Telegram approval queue — NON-GAME posts only, plus admin commands.
+"""Telegram approval queue (NON-GAME posts only) + admin commands.
 
 Scope (memory 2026-06-09): approval applies ONLY to pinned rules, filler/teaser
-and comms. ALL game posts (Clue 1, clues 2+, Winner Announcement) publish
+and comms. ALL game posts (Clue 1, clues, Winner Announcement) publish
 autonomously with NO approval — operational blindness is part of the integrity
 protocol, so the operator must not see clues before they publish.
 
@@ -10,35 +10,91 @@ Admin commands (from the hardcoded admin chat id only):
   /silence  — kill switch: pause the agent
   /resume   — resume after a pause
   /status   — current hunt + pipeline state
+
+This module keeps the LOGIC (auth, routing, approve/reject) free of the telegram
+SDK so it is unit-testable; the python-telegram-bot wiring (TelegramAdmin) imports
+the SDK lazily.
 """
 
 from __future__ import annotations
 
+# Post kinds that may go through approval. Game posts are deliberately excluded.
+NON_GAME_KINDS = frozenset({"pinned_rules", "filler", "comms"})
+_GAME_KINDS = frozenset({"clue_one", "clue", "winner_announcement"})
+
+
+def route_command(command: str, *, is_admin: bool, actions: dict) -> str:
+    """Authenticate + route an admin command to an action callback.
+
+    `actions` maps "launch"/"silence"/"resume"/"status" to callables returning a
+    response string (or None). Pure and side-effect-free except via the callbacks.
+    """
+    if not is_admin:
+        return "unauthorized"
+    name = command.lstrip("/").strip().split()[0].lower() if command.strip() else ""
+    fn = actions.get(name)
+    if fn is None:
+        return f"unknown command: /{name}" if name else "no command"
+    return fn() or "ok"
+
 
 class ApprovalQueue:
-    def __init__(self, *, bot_token: str, admin_chat_id: str, repo, orchestrator):
-        self._token = bot_token
-        self._admin_chat_id = admin_chat_id
+    """Persist non-game drafts and publish them on approval."""
+
+    def __init__(self, *, repo, publisher):
         self._repo = repo
-        self._orchestrator = orchestrator
+        self._publisher = publisher
 
-    def _is_admin(self, chat_id: str) -> bool:
-        return str(chat_id) == str(self._admin_chat_id)
+    def submit_for_approval(self, *, kind: str, draft_text: str, telegram_msg_id: str | None = None) -> int:
+        if kind in _GAME_KINDS:
+            raise ValueError(f"game post '{kind}' must publish autonomously, never queued")
+        if kind not in NON_GAME_KINDS:
+            raise ValueError(f"unknown post kind: {kind}")
+        return self._repo.create_approval(
+            kind=kind, draft_text=draft_text, telegram_msg_id=telegram_msg_id
+        )
 
-    async def submit_for_approval(self, *, kind: str, draft_text: str) -> None:
-        """Push a NON-game draft to the admin chat with approve/reject buttons.
+    def decide(self, approval_id: int, decision: str, *, edited_text: str | None = None) -> str:
+        """Apply an admin decision. approve -> publish; reject -> discard.
+        'approve' with edited_text publishes the edited version."""
+        record = self._repo.get_approval(approval_id)
+        if record is None:
+            return "not found"
+        if decision == "approve":
+            text = edited_text or record["draft_text"]
+            self._publisher.post(text)
+            self._repo.set_approval_status(approval_id, "approved")
+            return "published"
+        if decision == "reject":
+            self._repo.set_approval_status(approval_id, "rejected")
+            return "rejected"
+        raise ValueError(f"unknown decision: {decision}")
 
-        TODO(step 28): send message with inline buttons (approve / reject /
-        regenerate / edit); persist to approval_queue; publish on approval.
-        Reject this call if `kind` is a game post type — game posts never queue.
+
+class TelegramAdmin:
+    """python-telegram-bot wiring. Only the hardcoded admin chat may command it.
+
+    The SDK is imported lazily so this module stays importable without it.
+    Wiring is I/O — confirm live before production.
+    """
+
+    def __init__(self, *, bot_token: str, admin_chat_id: str, approval: ApprovalQueue, actions: dict):
+        self._token = bot_token
+        self._admin_chat_id = str(admin_chat_id)
+        self._approval = approval
+        self._actions = actions
+
+    def _is_admin(self, chat_id) -> bool:
+        return str(chat_id) == self._admin_chat_id
+
+    def build_application(self):
+        """Build the telegram Application with command + button handlers.
+
+        TODO(live): from telegram.ext import Application, CommandHandler,
+        CallbackQueryHandler. Register /launch /silence /resume /status ->
+        route_command(cmd, is_admin=self._is_admin(update.effective_chat.id),
+        actions=self._actions). Register a CallbackQueryHandler for approve/reject
+        buttons -> self._approval.decide(...). /launch should schedule the hunt in
+        a background task so the handler returns immediately.
         """
-        raise NotImplementedError("approval submit — implemented in step 28")
-
-    async def handle_command(self, *, chat_id: str, command: str) -> str:
-        """Route /launch /silence /resume /status — admin chat only.
-
-        TODO(step 28/25): authenticate via _is_admin, then call the orchestrator.
-        """
-        if not self._is_admin(chat_id):
-            return "unauthorized"
-        raise NotImplementedError("command routing — implemented in step 28")
+        raise NotImplementedError("telegram wiring — confirm live before production")
