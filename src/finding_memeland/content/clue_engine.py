@@ -46,10 +46,13 @@ class PersonaContext:
     solution_terms: list[str] = field(default_factory=list)
     banner_description: str = ""
     findable_post: str = ""
+    clue_facet_plan: list[str] = field(default_factory=list)  # shuffled once per hunt
 
     @classmethod
     def from_generated(cls, generated, handle: str) -> "PersonaContext":
-        """Build from a GeneratedPersona plus the account's actual @handle."""
+        """Build from a GeneratedPersona plus the account's actual @handle.
+        The facet plan is shuffled per hunt (variety), with signature_post forced
+        last (the locator anchor must be the final escalation)."""
         return cls(
             display_name=generated.display_name,
             handle=handle,
@@ -60,6 +63,7 @@ class PersonaContext:
             solution_terms=list(generated.solution_terms),
             banner_description=getattr(generated, "banner_prompt", ""),
             findable_post=getattr(generated, "findable_post", ""),
+            clue_facet_plan=shuffled_facet_plan(generated.display_name),
         )
 
 
@@ -78,38 +82,70 @@ def obliqueness_for(clue_index: int) -> float:
 # know whether to look at the name, the picture, the banner, or a pinned post.
 # Progression: concept first → visual disambiguators → name → the searchable
 # pinned post as the last-resort LOCATOR if the hunt drags on.
+# Static facet guidance. Name words use dynamic per-word facets ("name_word_N")
+# resolved by guidance_for(), so a name of ANY length gets a clue for EVERY word.
 VECTOR_GUIDANCE = {
-    "identity": "the hidden IDENTITY itself — hint who/what it is by inference "
-    "(paradoxes, structure). Cryptically signal this clue is about *who they are*.",
-    "avatar": "the PROFILE PICTURE — hint at a visual element of the avatar so "
-    "players can recognise the right account among look-alikes. Cryptically signal "
-    "you mean the picture.",
-    "banner": "the HEADER BANNER — hint at a visual element of the banner. "
-    "Cryptically signal you mean the header/banner image.",
-    "first_name": "the FIRST word of the display name — hint at it without writing "
-    "it. Signal you mean the start of what they call themselves.",
-    "last_name": "the LAST word of the display name — hint at it without writing "
-    "it. Signal you mean the rest of the name.",
-    "name": "the display NAME — hint at it without writing it. Signal you mean what "
-    "they call themselves.",
+    "avatar": "the PROFILE PICTURE — describe a distinctive visual element of the "
+    "avatar so players recognise the exact account among look-alikes.",
+    "banner": "the HEADER BANNER image — describe a distinctive visual element of "
+    "the banner.",
+    "bio": "the BIO — hint at the wording or attitude of the account's bio so "
+    "players recognise it.",
     "signature_post": "the pinned LOCATOR POST — point players (cryptically, more "
-    "directly as clues ease) toward finding the distinctive pinned post so they can "
-    "land on the exact account. Never quote the answer.",
+    "directly as clues ease) toward the distinctive phrase in the pinned post, so a "
+    "search lands them on the exact account.",
 }
 
 
+def _ordinal(n: int) -> str:
+    if 10 <= n % 100 <= 20:
+        return f"{n}th"
+    return f"{n}{ {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th') }"
+
+
+def _name_facets(display_name: str) -> list[str]:
+    """One facet per word of the display name (so every word gets its own clue)."""
+    words = display_name.split()
+    if len(words) <= 1:
+        return ["name_word_1"]
+    return [f"name_word_{i + 1}" for i in range(len(words))]
+
+
+def guidance_for(facet: str, persona: "PersonaContext") -> str:
+    """Resolve a facet (including dynamic name-word facets) to its clue guidance."""
+    if facet.startswith("name_word_"):
+        n = int(facet.rsplit("_", 1)[1])
+        words = persona.display_name.split()
+        word = words[n - 1] if 0 < n <= len(words) else ""
+        which = "the only word" if len(words) <= 1 else f"the {_ordinal(n)} word"
+        return (
+            f"{which} of the display NAME (the word '{word}') — hint at THAT EXACT "
+            "word (its meaning, a synonym, or wordplay on it) so a player decoding "
+            "the hint arrives at the literal word and can search it. Do NOT "
+            "substitute a theme-related word. Never write the word itself."
+        )
+    return VECTOR_GUIDANCE[facet]
+
+
 def clue_plan(persona: "PersonaContext") -> list[str]:
-    """Ordered facet plan for a hunt. Name split into first/last when it has 2+
-    words. Ends on the locator post (the findability safety net)."""
-    parts = persona.display_name.split()
-    name_vectors = ["first_name", "last_name"] if len(parts) >= 2 else ["name"]
-    return ["identity", "identity", "avatar", "banner", *name_vectors, "signature_post"]
+    """Deterministic ORDERED facet template (fallback when no per-hunt plan was
+    shuffled). Ends on the locator post."""
+    return [*_name_facets(persona.display_name), "avatar", "banner", "bio", "signature_post"]
+
+
+def shuffled_facet_plan(display_name: str) -> list[str]:
+    """Per-hunt plan: a facet per name word + avatar/banner/bio in RANDOM order,
+    with signature_post forced last (the searchable locator is always last)."""
+    facets = [*_name_facets(display_name), "avatar", "banner", "bio"]
+    random.shuffle(facets)
+    return [*facets, "signature_post"]
 
 
 def clue_vector_for(clue_index: int, persona: "PersonaContext") -> str:
-    """Facet this clue targets. Beyond the plan it stays on 'signature_post' —
-    the longer a hunt runs, the more the clues point at the searchable post."""
-    plan = clue_plan(persona)
+    """Facet this clue targets. Uses the persona's per-hunt shuffled plan if set,
+    else the ordered template. Beyond the plan it stays on 'signature_post' — the
+    longer a hunt runs, the more the clues point at the searchable post."""
+    plan = persona.clue_facet_plan or clue_plan(persona)
     return plan[min(clue_index - 1, len(plan) - 1)]
 
 
@@ -119,32 +155,39 @@ def next_clue_due(now: datetime | None = None) -> datetime:
 
 
 SYSTEM_PROMPT = """You are the game master of "Finding Memeland", writing CLUES \
-for the current treasure hunt. The clues are posted on the main @FindingMemeland \
-account and point players toward a HIDDEN persona account whose true identity is \
-given to you. Players must identify it by INFERENCE — combining at least two \
-vectors (a paradox, a structural quirk, name + avatar, etc.) — never by a direct \
-name lookup.
+for the current treasure hunt, posted on the main @FindingMemeland account. There \
+is a HIDDEN persona ACCOUNT on X. Players WIN by FINDING that account, reading the \
+claim code in its bio, and DMing it.
+
+Your clues must point at the persona's REAL, OBSERVABLE attributes — the words of \
+its display name, its profile picture, its banner image, its bio, and its \
+distinctive pinned post — so a player can LOCATE and RECOGNISE the exact account. \
+A player must be able to ACT on each clue (search a name, recognise an image, \
+search a phrase). Do NOT make them guess an abstract idea.
+
+The persona is themed around a concept/figure (the 'theme' below) ONLY for \
+coherence and flavour — never make players guess the theme; make them FIND the \
+account by its real attributes.
 
 Voice: playful, ironic, meme-native crypto Twitter. Community language, cheeky, \
-lowercase is fine, the occasional emoji. NOT mystical or poetic. Think a smug \
-oracle who is enjoying watching people struggle.
+lowercase is fine, the occasional emoji. NOT mystical or poetic. A smug oracle \
+enjoying the struggle.
 
 Hard rules for the clue text:
-- One short post, max ~200 characters. Standalone puzzle text only.
-- NEVER include: the solution terms (the literal answer), the persona's display \
-name, its @handle, any URL, or hashtags.
+- One short post, max ~200 characters. Standalone clue text only.
+- NEVER write verbatim: the display name or any of its words, the @handle, the \
+theme/solution terms, any URL, or hashtags. You HINT at them; you never spell them \
+out — that is the puzzle.
 - Obliqueness by progression. You are writing clue #{index}; target obliqueness \
-{obliqueness} (1.0 = maximally oblique; lower = more obvious). Clues 1-3 must stay \
-oblique — no name, nationality, or biographical fact that solves it by direct \
-lookup. From clue 4 onward you may be structurally direct, but STILL never write \
-the literal answer.
-- Each clue must add a NEW angle, roughly 30% more obvious than the previous one. \
-Do not repeat earlier clues.
-- FACET TARGETING: each clue focuses on ONE facet of the persona (given below) and \
-must CRYPTICALLY signal which facet it is — so players know whether to look at the \
-name, the profile picture, the banner, or a pinned post. Signal it indirectly \
+{obliqueness} (1.0 = maximally subtle; lower = clearer). Early clues are subtle, \
+later clues clearer — but never just write the name.
+- Each clue must add a NEW angle, roughly 30% clearer than the previous one. Do \
+not repeat earlier clues.
+- FACET TARGETING: each clue focuses on ONE real attribute (given below) and must \
+CRYPTICALLY signal which one — so players know whether to look at the name, the \
+profile picture, the banner, the bio, or the pinned post. Signal it indirectly \
 (e.g. "a picture's worth a thousand...", "check what hangs above their head"), \
-never naming the facet outright until obviousness is high (clue 5+).
+naming the facet outright only when obviousness is high (clue 5+).
 
 For clue #1 only, set taunt to "". For clue #2 and later, also write a short, \
 varying jeer that pokes fun at players for not solving it yet (e.g. "c'mon you \
@@ -157,17 +200,18 @@ def _build_user_message(persona: PersonaContext, clue_index: int, prior_clues: l
     prior = "\n".join(f"- {c}" for c in prior_clues) if prior_clues else "(none — this is the first clue)"
     vector = clue_vector_for(clue_index, persona)
     return (
-        "SECRET — do NOT reveal any of this literally:\n"
-        f"- true identity / backstory: {persona.backstory}\n"
-        f"- solution terms to NEVER write: {persona.solution_terms}\n"
-        f"- persona display name: {persona.display_name}\n"
-        f"- persona @handle: {persona.handle}\n"
-        f"- persona bio: {persona.bio}\n"
+        "The account's REAL attributes (point clues AT these; never write them verbatim):\n"
+        f"- display name: {persona.display_name}\n"
+        f"- @handle (never write): {persona.handle}\n"
+        f"- bio: {persona.bio}\n"
         f"- avatar (profile picture): {persona.avatar_description}\n"
-        f"- banner (header): {persona.banner_description}\n"
+        f"- banner (header image): {persona.banner_description}\n"
         f"- pinned locator post: {persona.findable_post}\n\n"
+        f"Theme (FLAVOUR ONLY — do NOT make players guess this, do not write it): "
+        f"{persona.backstory}\n"
+        f"Terms to NEVER write: {persona.solution_terms}\n\n"
         f"This is clue #{clue_index}. Target obliqueness: {obliqueness_for(clue_index)}.\n"
-        f"FACET for this clue: {vector} — {VECTOR_GUIDANCE[vector]}\n"
+        f"FACET for this clue: {vector} — {guidance_for(vector, persona)}\n"
         f"Previous clues:\n{prior}\n\n"
         f"Write clue #{clue_index}."
     )
