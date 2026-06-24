@@ -91,6 +91,13 @@ class Repo:
             "id", persona_id
         ).execute()
 
+    def create_persona(self, *, handle: str, x_user_id: str, oauth_ref: str, state: str = "ready", **fields: Any) -> str:
+        resp = self._db.table("personas").insert(
+            _clean({"handle": handle, "x_user_id": x_user_id, "oauth_ref": oauth_ref,
+                    "state": state, **fields})
+        ).execute()
+        return resp.data[0]["id"]
+
     # --- approval queue (non-game posts) ---
     def create_approval(self, *, kind: str, draft_text: str, telegram_msg_id: str | None = None) -> int:
         resp = self._db.table("approval_queue").insert(

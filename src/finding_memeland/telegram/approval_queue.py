@@ -88,13 +88,25 @@ class TelegramAdmin:
         return str(chat_id) == self._admin_chat_id
 
     def build_application(self):
-        """Build the telegram Application with command + button handlers.
+        """Build the telegram Application with the admin command handlers.
 
-        TODO(live): from telegram.ext import Application, CommandHandler,
-        CallbackQueryHandler. Register /launch /silence /resume /status ->
-        route_command(cmd, is_admin=self._is_admin(update.effective_chat.id),
-        actions=self._actions). Register a CallbackQueryHandler for approve/reject
-        buttons -> self._approval.decide(...). /launch should schedule the hunt in
-        a background task so the handler returns immediately.
+        SDK imported lazily. Approve/reject inline-button wiring (for non-game
+        posts) is a follow-up; the core admin commands are wired here. Confirm
+        live before production.
         """
-        raise NotImplementedError("telegram wiring — confirm live before production")
+        from telegram.ext import Application, CommandHandler
+
+        app = Application.builder().token(self._token).build()
+
+        async def _handle(update, context):  # noqa: ANN001
+            chat_id = update.effective_chat.id if update.effective_chat else None
+            text = update.message.text if update.message else ""
+            reply = route_command(text, is_admin=self._is_admin(chat_id), actions=self._actions)
+            await update.message.reply_text(reply)
+
+        app.add_handler(CommandHandler(["launch", "silence", "resume", "status"], _handle))
+        return app
+
+    def run(self) -> None:
+        """Block, polling Telegram for admin commands. This is the live run loop."""
+        self.build_application().run_polling()

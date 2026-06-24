@@ -1,36 +1,132 @@
-"""Entrypoint — boots the agent.
+"""Entrypoint + composition root.
 
     doppler run -- python -m finding_memeland.main
 
-Wires settings + clients + modules, starts the Telegram command listener
-(manual /launch trigger) and the supervisor. Hunts are NOT scheduled — they fire
-on the admin's /launch command (deliberate: aligns hunts with marketing pushes).
+`build_agent` is the single place that constructs the heavy clients (Anthropic,
+OpenAI, web3, Supabase, X) and wires them, via the runtime adapters, into the
+Orchestrator. Everything else in the codebase depends only on the ports, so this
+is the one import-heavy module.
+
+The agent boots idle. Hunts fire on the admin's Telegram /launch (the bot loop —
+TelegramAdmin.build_application — is the final live wiring step). run_hunt()
+fails fast via settings.assert_ready_for_hunt() if token/wallet/price aren't set.
 """
 
 from __future__ import annotations
 
-import asyncio
+from dataclasses import dataclass
 
-from .config import get_settings
+from .config import Settings, get_settings
 
 
-async def amain() -> None:
-    settings = get_settings()
+@dataclass
+class Agent:
+    orchestrator: object
+    telegram: object
+    repo: object
 
-    # TODO(step 25): construct clients (Anthropic, Supabase, web3, X, Telegram),
-    # build Repo, instantiate modules, inject into Orchestrator, start the
-    # Telegram command loop + supervisor. Keep running until interrupted.
-    #
-    #   from .db.client import make_client, Repo
-    #   from .social.x_client import XClient
-    #   ... etc
-    #
-    # The agent idles until /launch.
-    print(f"[finding-memeland] boot ok (env={settings.fmml_env}). Wiring in step 25.")
+
+def build_agent(settings: Settings | None = None) -> Agent:
+    s = settings or get_settings()
+
+    # Heavy clients (imported here so the rest of the codebase stays light).
+    from anthropic import Anthropic
+    from openai import OpenAI
+    from web3 import Web3
+
+    from .chain.holdings import Holdings
+    from .chain.payout import PayoutEngine
+    from .content.clue_engine import ClueEngine
+    from .db.client import Repo, make_client
+    from .dm.listener import XDMSource
+    from .dm.validator import DMValidator
+    from .orchestrator.state_machine import Orchestrator
+    from .persona.avatar import AvatarGenerator
+    from .persona.dresser import PersonaDresser
+    from .persona.generator import PersonaGenerator
+    from .persona.source import DBPersonaSource
+    from .runtime import (
+        ManualPriceFeed,
+        StdoutNotifier,
+        SystemClock,
+        env_token_resolver,
+        write_temp_png,
+    )
+    from .social.publisher import XPublisher
+    from .social.x_client import XClient
+    from .telegram.approval_queue import ApprovalQueue, TelegramAdmin
+
+    anthropic = Anthropic(api_key=s.anthropic_api_key)
+    openai = OpenAI(api_key=s.openai_api_key)
+    repo = Repo(make_client(s.supabase_url, s.supabase_service_role_key))
+    web3 = Web3(Web3.HTTPProvider(s.base_rpc_url))
+    x = XClient(
+        api_key=s.x_api_key, api_secret=s.x_api_secret, bearer_token=s.x_bearer_token,
+        main_access_token=s.x_main_access_token, main_access_secret=s.x_main_access_secret,
+    )
+
+    holdings = Holdings(web3=web3, token_address=s.fmml_token_address, repo=repo)
+    orchestrator = Orchestrator(
+        settings=s,
+        clock=SystemClock(),
+        repo=repo,
+        persona_source=DBPersonaSource(repo, env_token_resolver),
+        persona_generator=PersonaGenerator(anthropic, s.anthropic_model),
+        avatar_generator=AvatarGenerator(
+            openai, model=s.openai_image_model, size=s.openai_image_size
+        ),
+        dresser=PersonaDresser(x),
+        publisher=XPublisher(x),
+        clue_engine=ClueEngine(anthropic, s.anthropic_model),
+        dm_source=XDMSource(x),
+        validator=DMValidator(
+            chain=holdings, x_client=x, profile_lookup=x.lookup_user,
+            own_handles=["FindingMemeland"],
+        ),
+        payout=PayoutEngine(
+            web3=web3, token_address=s.fmml_token_address,
+            hot_wallet_key=s.hot_wallet_private_key, per_hunt_cap=int(s.payout_cap_fmml or 0),
+        ),
+        price_feed=ManualPriceFeed(s.fmml_usd_price),
+        notifier=StdoutNotifier(),
+        register=s.persona_register,
+        holding_floor_usd=s.holding_floor_usd,
+        holding_hours=s.holding_hours,
+        avatar_writer=write_temp_png,
+    )
+
+    # Admin/approval surface. /launch fires a hunt in the BACKGROUND (it can run for
+    # hours) so the bot stays responsive; the command returns immediately.
+    import threading
+
+    def _launch() -> str:
+        threading.Thread(target=orchestrator.run_hunt, daemon=True).start()
+        return "hunt launching 🏴"
+
+    actions = {
+        "launch": _launch,
+        "status": lambda: "idle",
+        "silence": lambda: "pause requested (supervisor wiring pending)",
+        "resume": lambda: "resume requested",
+    }
+    telegram = TelegramAdmin(
+        bot_token=s.telegram_bot_token, admin_chat_id=s.telegram_admin_chat_id,
+        approval=ApprovalQueue(repo=repo, publisher=XPublisher(x)), actions=actions,
+    )
+    return Agent(orchestrator=orchestrator, telegram=telegram, repo=repo)
 
 
 def main() -> None:
-    asyncio.run(amain())
+    s = get_settings()
+    agent = build_agent(s)
+    token_ready = bool(s.fmml_token_address and s.fmml_usd_price > 0)
+    print(f"[finding-memeland] agent built (env={s.fmml_env}). hunt-ready: {token_ready}")
+
+    if s.telegram_bot_token and s.telegram_admin_chat_id:
+        print("  starting Telegram admin loop — send /status or /launch from the admin chat.")
+        agent.telegram.run()  # blocks, polling for admin commands
+    else:
+        print("  TELEGRAM_BOT_TOKEN / TELEGRAM_ADMIN_CHAT_ID not set — staying idle.")
 
 
 if __name__ == "__main__":

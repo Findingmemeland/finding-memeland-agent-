@@ -68,13 +68,41 @@ python -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 # secrets via Doppler (see doppler.md); never commit a .env
-doppler run -- python -m finding_memeland.main
+doppler run -- PYTHONPATH=src python -m finding_memeland.main
 ```
 
 1. Create the Supabase project and run `db/schema.sql`.
 2. Create the Doppler project and set every variable in `doppler.md`.
-3. Authorize the main account + each persona via OAuth (script ships with the
-   working implementation, step 16).
+3. Warm each persona (~10 days), then authorize it:
+   `python scripts/authorize_persona.py <ref>` (step 16) — stores its tokens and
+   registers it as `ready`.
+
+## Boot & run a hunt
+
+`main.build_agent()` is the composition root: it builds the Anthropic, OpenAI,
+web3, Supabase and X clients and wires them, through the runtime adapters, into
+the `Orchestrator`. `main()` then starts the Telegram admin loop.
+
+The agent boots idle. The admin fires a hunt with **/launch** from the hardcoded
+admin chat; the hunt runs in a background thread. A hunt only runs once
+`FMML_TOKEN_ADDRESS`, `FMML_USD_PRICE`, `HOT_WALLET_PRIVATE_KEY`,
+`PAYOUT_CAP_FMML` and `INTEGRITY_SALT` are set (`assert_ready_for_hunt`).
+
+## Validation scripts (run as you go)
+
+- `scripts/spike_dm_read.py` / `spike_x_v2.py` — confirm X reads/writes in your tier
+- `scripts/generate_persona_sample.py` / `generate_clues_sample.py` — eyeball content
+- `scripts/generate_avatar_sample.py` — persona + avatar end-to-end
+- `scripts/simulate_hunt.py` — full hunt dry-run (real content, fake X/chain)
+- `scripts/test_payout.py` — on-chain payout on Base Sepolia
+- `scripts/test_supabase.py` — DB round-trip
+- `scripts/check_findability.py` — pre-hunt: is the persona locatable?
+
+## Deploy (Railway)
+
+The `Procfile` runs the worker. On Railway: create a project from this repo,
+enable the **Doppler ↔ Railway** integration (config `prd`) so secrets are
+injected, and deploy. No `doppler` CLI needed in prod — Railway injects env.
 
 ## Cost note
 

@@ -53,6 +53,10 @@ class Settings(BaseSettings):
     prize_usd_min: int = Field(default=200)
     prize_usd_max: int = Field(default=500)
     integrity_salt: str = Field(default="")
+    fmml_usd_price: float = Field(default=0.0)      # set after token launch (price source)
+    holding_floor_usd: float = Field(default=50.0)  # min holding in USD
+    holding_hours: int = Field(default=48)          # genesis ramp default
+    persona_register: str = Field(default="medium")
 
     @property
     def is_production(self) -> bool:
