@@ -1,0 +1,5 @@
+[
+  {"label": "10d email-only (phone added)", "handle": "REPLACE_HANDLE", "phrase": "REPLACE WITH THE EXACT DISTINCTIVE TWEET TEXT"},
+  {"label": "3d email+phone", "handle": "REPLACE_HANDLE", "phrase": "REPLACE WITH THE EXACT DISTINCTIVE TWEET TEXT"},
+  {"label": "new today", "handle": "REPLACE_HANDLE", "phrase": "REPLACE WITH THE EXACT DISTINCTIVE TWEET TEXT"}
+]
