@@ -51,6 +51,8 @@ create table personas (
   -- OAuth tokens are NOT stored here in plaintext; kept in Doppler keyed by id.
   oauth_ref      text,                         -- Doppler key suffix, e.g. '01'
   esim_ref       text,                         -- bookkeeping only
+  account_created_at timestamptz,              -- X account creation date (findability age)
+  phone_verified bool not null default false,  -- eSIM/phone added — required for findability
   warmup_started_at timestamptz,
   ready_at       timestamptz,
   used_in_hunt   bigint,                       -- fk hunts.id (one hunt only)

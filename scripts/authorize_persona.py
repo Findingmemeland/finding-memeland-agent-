@@ -60,7 +60,15 @@ def main() -> int:
         s.x_api_key, s.x_api_secret, access_token, access_secret))
     me = api.verify_credentials()
     handle, x_user_id = me.screen_name, me.id_str
-    print(f"\nauthorized @{handle} (user id {x_user_id}).")
+    account_created_at = getattr(me, "created_at", None)
+    print(f"\nauthorized @{handle} (user id {x_user_id}, created {account_created_at}).")
+
+    # Findability gate: a persona is only usable if phone-verified AND ~7d old.
+    from finding_memeland.persona.source import persona_findability_ready
+
+    phone_verified = input("Is this account phone-verified (eSIM/number added)? (y/n): ").strip().lower() == "y"
+    ready = persona_findability_ready(account_created_at, phone_verified, min_days=s.min_warmup_days)
+    state = "ready" if ready else "warmup"
 
     print("\n--- ADD THESE TO DOPPLER (config: dev and prd) ---")
     print(f"X_PERSONA_{ref}_ACCESS_TOKEN={access_token}")
@@ -71,12 +79,19 @@ def main() -> int:
     if s.supabase_url and s.supabase_service_role_key:
         repo = Repo(make_client(s.supabase_url, s.supabase_service_role_key))
         pid = repo.create_persona(
-            handle=f"@{handle}", x_user_id=x_user_id, oauth_ref=ref, state="ready"
+            handle=f"@{handle}", x_user_id=x_user_id, oauth_ref=ref, state=state,
+            account_created_at=account_created_at, phone_verified=phone_verified,
         )
-        print(f"registered in Supabase as 'ready' (persona id {pid}).")
+        print(f"registered in Supabase as '{state}' (persona id {pid}).")
     else:
-        print("Supabase not configured in .env — add the persona row manually, state='ready'.")
+        print(f"Supabase not configured — add the persona row manually, state='{state}'.")
 
+    if not ready:
+        print(
+            f"\n⚠️  NOT findability-ready yet: needs phone-verified + age >= {s.min_warmup_days}d. "
+            "Saved as 'warmup'; the agent will NOT use it until it qualifies. Re-run later, "
+            "or update the row to state='ready' once it's old enough."
+        )
     print("\nPASS — persona authorized. Repeat for each persona with its own <ref>.")
     return 0
 

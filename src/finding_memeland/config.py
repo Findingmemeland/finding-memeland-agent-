@@ -57,6 +57,7 @@ class Settings(BaseSettings):
     holding_floor_usd: float = Field(default=50.0)  # min holding in USD
     holding_hours: int = Field(default=48)          # genesis ramp default
     persona_register: str = Field(default="medium")
+    min_warmup_days: int = Field(default=7)          # persona must be phone-verified + this old
 
     @property
     def is_production(self) -> bool:

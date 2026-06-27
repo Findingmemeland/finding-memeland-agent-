@@ -1,6 +1,10 @@
 import os
+from datetime import datetime, timedelta, timezone
 
-from finding_memeland.persona.source import DBPersonaSource
+from finding_memeland.persona.source import DBPersonaSource, persona_findability_ready
+
+_OLD = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+_NEW = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()
 from finding_memeland.runtime import (
     ManualPriceFeed,
     SystemClock,
@@ -89,13 +93,40 @@ class _Repo:
         self.state_calls.append((pid, state, fields))
 
 
+def _ready_row():
+    return {"id": "p1", "handle": "@anon", "x_user_id": "123", "oauth_ref": "01",
+            "account_created_at": _OLD, "phone_verified": True}
+
+
+def test_persona_findability_ready_rule():
+    # phone + old enough -> ready
+    assert persona_findability_ready(_OLD, True, min_days=7)
+    # no phone -> not ready
+    assert not persona_findability_ready(_OLD, False, min_days=7)
+    # too new -> not ready
+    assert not persona_findability_ready(_NEW, True, min_days=7)
+    # missing created date -> not ready
+    assert not persona_findability_ready(None, True, min_days=7)
+
+
 def test_persona_source_acquires_and_marks_in_play():
-    repo = _Repo({"id": "p1", "handle": "@anon", "x_user_id": "123", "oauth_ref": "01"})
+    repo = _Repo(_ready_row())
     src = DBPersonaSource(repo, token_resolver=lambda ref: (f"tok{ref}", f"sec{ref}"))
     persona = src.acquire_ready()
     assert persona.handle == "@anon" and persona.x_user_id == "123"
     assert persona.access_token == "tok01" and persona.access_secret == "sec01"
     assert ("p1", "in_play", {}) in repo.state_calls
+
+
+def test_persona_source_rejects_unverified_or_too_new():
+    for bad in ({**_ready_row(), "phone_verified": False},
+                {**_ready_row(), "account_created_at": _NEW}):
+        src = DBPersonaSource(_Repo(bad), token_resolver=lambda r: ("t", "s"))
+        try:
+            src.acquire_ready()
+        except RuntimeError:
+            continue
+        raise AssertionError("expected RuntimeError for under-prepared persona")
 
 
 def test_persona_source_raises_when_pipeline_empty():
