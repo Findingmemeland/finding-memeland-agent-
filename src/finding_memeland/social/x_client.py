@@ -15,6 +15,7 @@ confirmed so far (see scripts/spike_dm_read.py).
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 
 import tweepy
@@ -24,6 +25,21 @@ from .x_text import MAX_BIO_LEN, MAX_NAME_LEN
 # How many of a user's recent tweets to scan when checking for a reshare.
 _RESHARE_SCAN = 100
 _DM_FETCH = 50
+
+
+def _retry_server_error(fn, *, tries: int = 3, delay: float = 4.0):
+    """Retry a call on transient X 5xx errors. The v1.1 profile endpoints and
+    create_tweet are known to be flaky (e.g. '131 - Internal error'); a short
+    retry rides over the hiccup. Re-raises the last error after `tries` attempts."""
+    last = None
+    for attempt in range(tries):
+        try:
+            return fn()
+        except tweepy.errors.TwitterServerError as e:
+            last = e
+            if attempt < tries - 1:
+                time.sleep(delay)
+    raise last
 
 
 @dataclass(frozen=True)
@@ -93,17 +109,23 @@ class XClient:
             kwargs["description"] = description
         if not kwargs:
             raise ValueError("nothing to update")
-        u = self._api_for(access_token, access_secret).update_profile(**kwargs)
+        u = _retry_server_error(
+            lambda: self._api_for(access_token, access_secret).update_profile(**kwargs)
+        )
         return Profile(
             user_id=u.id_str, screen_name=u.screen_name,
             name=u.name or "", description=getattr(u, "description", "") or "",
         )
 
     def set_avatar(self, access_token: str, access_secret: str, image_path: str) -> None:
-        self._api_for(access_token, access_secret).update_profile_image(image_path)
+        _retry_server_error(
+            lambda: self._api_for(access_token, access_secret).update_profile_image(image_path)
+        )
 
     def set_banner(self, access_token: str, access_secret: str, image_path: str) -> None:
-        self._api_for(access_token, access_secret).update_profile_banner(image_path)
+        _retry_server_error(
+            lambda: self._api_for(access_token, access_secret).update_profile_banner(image_path)
+        )
 
     def post_as_persona(self, access_token: str, access_secret: str, text: str) -> str:
         """Post from a PERSONA account (its own OAuth context). Used to publish the
@@ -112,8 +134,16 @@ class XClient:
             consumer_key=self._api_key, consumer_secret=self._api_secret,
             access_token=access_token, access_token_secret=access_secret,
         )
-        resp = client.create_tweet(text=text, user_auth=True)
+        resp = _retry_server_error(lambda: client.create_tweet(text=text, user_auth=True))
         return str(resp.data["id"])
+
+    def delete_as_persona(self, access_token: str, access_secret: str, tweet_id: str) -> None:
+        """Delete a post from a PERSONA account (used by the live-test cleanup)."""
+        client = tweepy.Client(
+            consumer_key=self._api_key, consumer_secret=self._api_secret,
+            access_token=access_token, access_token_secret=access_secret,
+        )
+        client.delete_tweet(id=tweet_id, user_auth=True)
 
     def search_recent(self, query: str, *, max_results: int = 10) -> list[dict]:
         """Search recent tweets (v2) — used for the pre-hunt findability check:
@@ -163,8 +193,12 @@ class XClient:
     def post(self, text: str, *, long_post: bool = False) -> str:
         """Publish on the main account; returns the tweet id. Long posts require
         X Premium on the account (no extra param needed)."""
-        resp = self._v2().create_tweet(text=text, user_auth=True)
+        resp = _retry_server_error(lambda: self._v2().create_tweet(text=text, user_auth=True))
         return str(resp.data["id"])
+
+    def delete_post(self, tweet_id: str) -> None:
+        """Delete a post on the main account (used by the live-test cleanup)."""
+        self._v2().delete_tweet(id=tweet_id, user_auth=True)
 
     def reply_dm(self, recipient_x_id: str, text: str) -> None:
         self._v2().create_direct_message(participant_id=recipient_x_id, text=text, user_auth=True)

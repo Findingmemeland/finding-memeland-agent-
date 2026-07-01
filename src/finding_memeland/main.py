@@ -57,7 +57,7 @@ def build_agent(settings: Settings | None = None) -> Agent:
     from .telegram.approval_queue import ApprovalQueue, TelegramAdmin
 
     anthropic = Anthropic(api_key=s.anthropic_api_key)
-    openai = OpenAI(api_key=s.openai_api_key)
+    openai = OpenAI(api_key=s.openai_api_key, max_retries=4, timeout=120.0)
     repo = Repo(make_client(s.supabase_url, s.supabase_service_role_key))
     web3 = Web3(Web3.HTTPProvider(s.base_rpc_url))
     x = XClient(

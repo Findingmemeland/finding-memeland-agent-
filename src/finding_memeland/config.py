@@ -56,7 +56,7 @@ class Settings(BaseSettings):
     fmml_usd_price: float = Field(default=0.0)      # set after token launch (price source)
     total_supply: float = Field(default=100_000_000_000.0)  # 100B — for FDV/suggestion
     holding_floor_usd: float = Field(default=50.0)  # min holding in USD
-    holding_hours: int = Field(default=48)          # genesis ramp default
+    holding_hours: int = Field(default=24)          # continuous-hold eligibility window
     persona_register: str = Field(default="medium")
     min_warmup_days: int = Field(default=7)          # persona must be phone-verified + this old
     min_prize_usd: float = Field(default=200.0)      # floor — minimum prize worth playing for

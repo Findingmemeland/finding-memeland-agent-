@@ -13,7 +13,11 @@ from __future__ import annotations
 
 import base64
 
-_SAFETY = ", no text, no watermark, no logos, not a real living person, no recognizable real-person likeness"
+_SAFETY = (
+    ", no text, no watermark, no logos, not a real living person, "
+    "no recognizable real-person likeness, safe for work, non-sexual, "
+    "no nudity, no suggestive or explicit content"
+)
 AVATAR_STYLE_SUFFIX = ", profile picture composition" + _SAFETY
 BANNER_STYLE_SUFFIX = ", wide header banner composition" + _SAFETY
 BANNER_SIZE = "1536x1024"  # closest wide size to X's 3:1 banner; X crops to fit
@@ -26,15 +30,28 @@ class AvatarGenerator:
         self._size = size
 
     def _generate(self, prompt: str, suffix: str, size: str) -> bytes:
-        resp = self._client.images.generate(
-            model=self._model, prompt=prompt.strip() + suffix, size=size, n=1
-        )
-        b64 = getattr(resp.data[0], "b64_json", None)
-        if not b64:
-            raise RuntimeError(
-                "image API returned no b64_json — check the model id / response format"
-            )
-        return base64.b64decode(b64)
+        # Best-effort. Try the persona's prompt; if the image API rejects it
+        # (content moderation) or errors after the client's own retries, fall
+        # back to a neutral safe prompt; finally skip the image (return b"")
+        # rather than aborting the whole hunt. The orchestrator treats empty
+        # bytes as "no image" and simply doesn't upload one.
+        attempts = [
+            prompt.strip() + suffix,
+            "a minimal abstract painterly texture in muted colors" + suffix,
+        ]
+        last_err = None
+        for p in attempts:
+            try:
+                resp = self._client.images.generate(
+                    model=self._model, prompt=p, size=size, n=1
+                )
+                b64 = getattr(resp.data[0], "b64_json", None)
+                if b64:
+                    return base64.b64decode(b64)
+            except Exception as e:  # noqa: BLE001
+                last_err = e
+        print(f"[avatar] image generation skipped (failed/blocked): {last_err!r}")
+        return b""
 
     def generate_png(self, avatar_prompt: str) -> bytes:
         """Generate the profile picture and return PNG bytes."""

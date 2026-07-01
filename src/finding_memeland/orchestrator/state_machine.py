@@ -123,10 +123,12 @@ class Orchestrator:
         hunt_number: int = 1,
         register: str = "medium",
         holding_floor_usd: float = 50.0,
-        holding_hours: int = 48,
-        poll_interval_s: int = 20,
+        holding_hours: int = 24,
+        poll_interval_s: int = 75,  # DM-read rate-limit safe (~15 req/15min); winner = DM arrival order, so slower polling never changes who wins
         max_rounds: int = 100_000,
         avatar_writer=None,
+        clue_due_fn=None,
+        cleanup_window_s: int = CLEANUP_WINDOW_SECONDS,
     ):
         self._settings = settings
         self._clock = clock
@@ -149,6 +151,10 @@ class Orchestrator:
         self._poll_interval_s = poll_interval_s
         self._max_rounds = max_rounds
         self._avatar_writer = avatar_writer  # callable(bytes) -> path, or None
+        # Cadence hooks: defaults preserve production (1-3h between clues, 1h reveal).
+        # The live-test harness injects short intervals so a rehearsal runs in minutes.
+        self._clue_due_fn = clue_due_fn or next_clue_due
+        self._cleanup_window_s = cleanup_window_s
 
     # ------------------------------------------------------------------
     def run_hunt(self, prize_usd: float | None = None) -> PreparedHunt:
@@ -250,11 +256,17 @@ class Orchestrator:
     def _clue_and_dm_loop(self, hunt: PreparedHunt) -> Winner:
         since: str | None = None
         clue_index = 1
-        next_due = next_clue_due(self._clock.now())
+        next_due = self._clue_due_fn(self._clock.now())
 
         for _ in range(self._max_rounds):
             for sub in sorted(self._dm_source.poll(since), key=lambda s: s.created_at):
-                since = sub.dm_id
+                since = sub.dm_id  # advance the marker even for skipped DMs
+                # Ignore DMs from BEFORE this hunt started (old conversations are
+                # not submissions). Without this the agent would re-process every
+                # historical DM each hunt — spamming past contacts with the canned
+                # reply and burning API credits.
+                if hunt.started_at is not None and sub.created_at < hunt.started_at:
+                    continue
                 parsed = parse_dm(
                     sub.dm_id, sub.sender_x_id, sub.body,
                     expected_code_len=len(hunt.claim_code),
@@ -270,7 +282,13 @@ class Orchestrator:
                     return Winner(submission=sub, wallet=parsed.wallet)
                 reply = _REPLY_BY_OUTCOME.get(res.outcome)
                 if reply:
-                    self._publisher.reply_dm(sub.sender_x_id, reply)
+                    # Courtesy loss-notice is best-effort: a failed reply (e.g. DM
+                    # send restrictions) must NEVER abort the hunt. The winner is
+                    # paid on-chain + announced publicly; no DM is required.
+                    try:
+                        self._publisher.reply_dm(sub.sender_x_id, reply)
+                    except Exception as e:  # noqa: BLE001
+                        self._notify(f"reply to @{sub.sender_handle} failed (non-fatal): {e!r}")
 
             if self._clock.now() >= next_due:
                 clue_index += 1
@@ -283,7 +301,7 @@ class Orchestrator:
                     hunt_id=hunt.id, clue_index=clue_index,
                     clue_text=draft.text, tweet_id=tweet_id,
                 )
-                next_due = next_clue_due(self._clock.now())
+                next_due = self._clue_due_fn(self._clock.now())
 
             self._clock.sleep(self._poll_interval_s)
 
@@ -320,7 +338,7 @@ class Orchestrator:
             salt=hunt.salt,
         )
         self._publisher.post(winner_announcement(data), long_post=True)
-        self._clock.sleep(CLEANUP_WINDOW_SECONDS)  # 1h reveal window
+        self._clock.sleep(self._cleanup_window_s)  # reveal window (1h prod; short in test)
 
     def _retire(self, hunt: PreparedHunt) -> None:
         self._transition(hunt, HuntState.RETIRING)
